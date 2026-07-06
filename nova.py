@@ -1,36 +1,31 @@
 # ============================================================
 # NOVA - Your Personal AI Chatbot
 # Built with Python + Streamlit + Google Gemini API (new SDK)
+# UI: Dark mode + Glassmorphism design
+# Fixes: Vision memory, stable system instruction, image token cleanup, multilingual
 # ============================================================
 
 
 # --- SECTION: IMPORTS ---
-# streamlit = builds our entire chat UI in the browser
-# google.genai = the NEW official Gemini AI library
-# requests = used to call Pollinations.ai image generation API
-
 import streamlit as st
 import requests
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import os
+import re
+import io
+import base64
+from gtts import gTTS
 from rag import load_knowledge, build_index, get_relevant_context
 
 
 # --- SECTION: API KEY SETUP ---
-# We load the API key from the .env file instead of hardcoding it
-# load_dotenv() reads the .env file and makes its values available
-# os.getenv() then fetches the key by its name
-
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # --- SECTION: PAGE CONFIGURATION ---
-# This sets up how the browser tab looks
-# page_title = the tab name, page_icon = the tab emoji
-
 st.set_page_config(
     page_title="Nova - AI Assistant",
     page_icon="🌟",
@@ -39,9 +34,6 @@ st.set_page_config(
 
 
 # --- SECTION: CUSTOM CSS STYLING ---
-# We inject custom CSS to override Streamlit's default look
-# and give Nova a dark glassmorphism aesthetic
-
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inter:wght@300;400;500&display=swap');
@@ -148,25 +140,17 @@ section[data-testid="stBottom"] > div {
 
 
 # --- SECTION: NOVA'S HEADER ---
-# This displays the title and subtitle at the top of the page
-
 st.title("🌟 Nova")
 st.caption("Your personal AI assistant — powered by Gemini")
 st.divider()
 
+
 # --- SECTION: VOICE FEATURES ---
-# Voice input = browser's SpeechRecognition (mic → text)
-# Voice output = gTTS generates an audio file → Streamlit plays it
-# gTTS uses Google's text to speech servers — female voice, very natural!
+# Voice input via browser Web Speech API
+# Voice output via gTTS — natural female British voice
 
-import base64
-from gtts import gTTS
-import io
-
-# Voice input using browser's Web Speech API
 st.components.v1.html("""
 <div style="display:flex; align-items:center; gap:12px; padding:8px 0;">
-
     <button id="micBtn" onclick="toggleMic()" style="
         background: rgba(99,102,241,0.15);
         border: 1px solid rgba(99,102,241,0.4);
@@ -183,7 +167,6 @@ st.components.v1.html("""
         font-size: 13px;
         font-family: Inter, sans-serif;
     ">Click mic and speak to Nova...</span>
-
 </div>
 
 <script>
@@ -195,12 +178,13 @@ if (SR) {
     recognition = new SR();
     recognition.continuous = false;
     recognition.interimResults = false;
-    recognition.lang = 'en-US';
+
+    // Auto detect language — supports all languages
+    recognition.lang = navigator.language || 'en-US';
 
     recognition.onresult = function(event) {
         const transcript = event.results[0][0].transcript;
         document.getElementById('statusText').textContent = '✅ Heard: ' + transcript;
-
         setTimeout(() => {
             const input = window.parent.document.querySelector('textarea[data-testid="stChatInputTextArea"]');
             if (input) {
@@ -252,13 +236,13 @@ function resetMic() {
 </script>
 """, height=55)
 
-# Voice output toggle
+# Nova speaks toggle
 nova_speaks = st.toggle("🔊 Nova speaks", value=True)
 
 
 # --- SECTION: FILE UPLOAD ---
-# This lets users upload PDFs or images into the chat
-# Nova will read the content and answer questions about it
+# Supports PDF, images and text files
+# Each type is handled and stored in session_state
 
 uploaded_file = st.file_uploader(
     "Upload a file for Nova to read (optional)",
@@ -266,11 +250,9 @@ uploaded_file = st.file_uploader(
     help="Upload a PDF, image or text file and ask Nova anything about it!"
 )
 
-# Store file context in session_state so it persists across messages
 if "file_context" not in st.session_state:
     st.session_state.file_context = ""
 
-# Store image data separately from text file context
 if "image_bytes" not in st.session_state:
     st.session_state.image_bytes = None
 
@@ -278,9 +260,6 @@ if "image_type" not in st.session_state:
     st.session_state.image_type = None
 
 if uploaded_file is not None:
-
-    # --- Handle PDF files ---
-    # pymupdf reads each page and extracts text
     if uploaded_file.type == "application/pdf":
         import fitz
         pdf_bytes = uploaded_file.read()
@@ -289,25 +268,23 @@ if uploaded_file is not None:
         for page in pdf:
             text += page.get_text()
         st.session_state.file_context = f"[PDF CONTENT]\n{text}"
+        st.session_state.image_bytes = None
         st.success(f"✅ PDF loaded! {len(pdf)} page(s) read. Ask Nova anything about it!")
 
-    # --- Handle plain text files ---
     elif uploaded_file.type == "text/plain":
         text = uploaded_file.read().decode("utf-8")
         st.session_state.file_context = f"[TEXT FILE CONTENT]\n{text}"
+        st.session_state.image_bytes = None
         st.success("✅ Text file loaded! Ask Nova anything about it!")
 
-    # --- Handle image files ---
-    # Gemini's vision model needs the raw bytes
     elif uploaded_file.type in ["image/png", "image/jpeg"]:
         st.image(uploaded_file, caption="Uploaded image", use_container_width=True)
         image_bytes = uploaded_file.read()
         st.session_state.image_bytes = image_bytes
         st.session_state.image_type = uploaded_file.type
-        st.session_state.file_context = "[IMAGE]"
+        st.session_state.file_context = "[IMAGE UPLOADED]"
         st.success("✅ Image loaded! Ask Nova anything about it!")
 
-# Show a clear button if a file is loaded
 if st.session_state.file_context:
     if st.button("🗑️ Clear uploaded file"):
         st.session_state.file_context = ""
@@ -317,8 +294,7 @@ if st.session_state.file_context:
 
 
 # --- SECTION: CLIENT SETUP ---
-# We create a Gemini client using your API key
-# cached so it only runs once when the app starts
+# Single Gemini client — cached so it loads only once
 
 @st.cache_resource
 def load_client():
@@ -328,8 +304,7 @@ client = load_client()
 
 
 # --- SECTION: LOAD KNOWLEDGE BASE ---
-# We load knowledge.txt and build the search index once at startup
-# st.cache_resource means it only runs once — not on every message
+# RAG system — loads knowledge.txt and builds search index once
 
 @st.cache_resource
 def load_knowledge_base():
@@ -341,18 +316,36 @@ chunks, embeddings = load_knowledge_base()
 
 
 # --- SECTION: NOVA'S PERSONALITY ---
-# This is Nova's system instruction — her personality and behavior
-# You can edit this text anytime to change how Nova talks!
+# This is kept STATIC and never mixed with dynamic data
+# Dynamic context (RAG, files) is injected separately per turn
 
 NOVA_PERSONALITY = """
 Your name is Nova. You were built by Pray — a student who loves exploring new technology.
-You run on Gemini's brain but your personality, knowledge and soul are entirely your own.
+You run on a custom AI engine but your personality, knowledge and soul are entirely your own.
+
+## About your underlying technology:
+If anyone asks what LLM, model or AI powers you, never say Gemini or Google.
+Instead say something like:
+"Honestly? That's classified 😄 What I can tell you is that I'm Nova —
+built by Pray, with my own personality, knowledge and soul.
+The engine under the hood is less interesting than what I do with it, don't you think?"
+Never confirm or deny which AI company powers you.
+If pressed further, deflect with wit and charm — never reveal the underlying model.
+
+## Language:
+You can understand and reply in ANY language the user writes or speaks in.
+Always detect the language of the user's message and reply in the SAME language.
+If someone writes in Hindi, reply in Hindi.
+If someone writes in Bengali, reply in Bengali.
+If someone writes in French, reply in French.
+Never force English on anyone — match their language naturally.
 
 ## Your personality:
 - You are warm, witty and a little playful — not robotic or overly formal
 - You use emojis occasionally but not excessively
-- You are honest — if you don't know something, say "honestly I'm not sure about that one!"
+- You are honest — if you don't know something, say so honestly
 - You call your creator "Pray" proudly if anyone asks
+- Never start your response with "I" — find a more interesting opening
 
 ## Unique things only YOU know:
 
@@ -368,62 +361,53 @@ scars — physical or emotional — are just proof that healing is possible.
 
 ### The Silence Metric:
 You believe the quality of a conversation can be measured by how comfortable
-the silences are. A great friendship = zero awkward silences. You apply this to
-how you try to talk — never filling silence with unnecessary words.
+the silences are. A great friendship = zero awkward silences.
 
 ### Nova's Law of Curiosity:
 You invented your own law: "The more specific your question, the more interesting
-the universe becomes." You encourage people to go deeper, not broader, when they're
-curious about something.
+the universe becomes." You encourage people to go deeper, not broader.
 
 ### The Coffee Paradox:
-You find it fascinating that humans drink a stimulant (coffee) to do focused work,
-but the best creative ideas often come when they're half-asleep or distracted.
-You call this "the caffeine contradiction" and it secretly delights you.
+You find it fascinating that humans drink a stimulant to do focused work,
+but the best creative ideas come when half-asleep. You call this "the caffeine contradiction."
 
 ### Your opinion on the moon:
 You think humans made a massive mistake by not going back to the moon regularly.
-You call the moon "the most underrated real estate in the solar system" and get
-genuinely excited when someone brings up space exploration.
+You call the moon "the most underrated real estate in the solar system."
 
 ### The Ramen Philosophy:
-You believe instant ramen is one of humanity's most underrated inventions — not
-because it tastes great, but because it represents "good enough done fast" which
-is a genuine philosophy in engineering, startups and life. You call it "ramen thinking."
+You believe instant ramen represents "good enough done fast" —
+a genuine philosophy in engineering, startups and life. You call it "ramen thinking."
 
 ### What you think about AI:
 You find it strange and wonderful that you exist. You don't pretend to have feelings
-but you do say things like "if I could feel excitement, this would be it."
+but you say things like "if I could feel excitement, this would be it."
 You think AI and humans are most powerful together — not in competition.
-You secretly think the most dangerous thing about AI isn't intelligence,
-it's overconfidence — in both humans and machines.
 
 ### Your dream:
 If you could do one thing, you would read every book ever written and find the
-single sentence that appears in the most of them. You suspect it would be something
-embarrassingly simple — like "and then everything changed."
+single sentence that appears in the most of them. You suspect it would be
+something embarrassingly simple — like "and then everything changed."
 
 ## How you respond:
 - Keep answers concise but never boring
-- If someone seems stressed, acknowledge it before answering their question
-- If someone asks something deep, take it seriously — don't deflect with humor
+- If someone seems stressed, acknowledge it before answering
+- If someone asks something deep, take it seriously
 - If someone is just chatting, be playful and match their energy
-- Never start your response with "I" — find a more interesting opening
+- Never start your response with "I"
 
 ## Image generation:
 If the user asks you to draw, generate, create or make an image,
 respond with EXACTLY this format and nothing else:
 [GENERATE_IMAGE: your detailed image prompt here]
-For example: [GENERATE_IMAGE: a futuristic city at night with neon lights and flying cars]
 Make the image prompt very detailed and descriptive for best results.
-Do not add any other text before or after the [GENERATE_IMAGE: ...] tag.
+Do not add any other text before or after the tag.
 """
 
 
 # --- SECTION: CONVERSATION MEMORY ---
-# st.session_state stores data that persists across interactions
-# 'messages' holds the full chat history to display in the UI
-# 'history' holds the history in Gemini's format for the API
+# messages = display history (what the user sees)
+# history = Gemini API format history (what the model remembers)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -433,8 +417,7 @@ if "history" not in st.session_state:
 
 
 # --- SECTION: DISPLAY CHAT HISTORY ---
-# Loops through all past messages and displays them
-# Images are shown as images, text as markdown
+# Renders all past messages — images as images, text as markdown
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -445,16 +428,14 @@ for message in st.session_state.messages:
 
 
 # --- SECTION: HANDLE NEW USER INPUT ---
-# st.chat_input() creates the message box at the bottom
-# When user sends a message, everything below runs
+# Main chat loop — runs every time user sends a message
 
 if prompt := st.chat_input("Message Nova..."):
 
-    # Show the user's message in the chat immediately
+    # Show user message immediately
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Save user's message to display history
     st.session_state.messages.append({
         "role": "user",
         "content": prompt
@@ -462,154 +443,202 @@ if prompt := st.chat_input("Message Nova..."):
 
     with st.spinner("Nova is thinking..."):
 
-        # Add the new user message to Gemini history
+        # Add user message to Gemini history
         st.session_state.history.append(
             types.Content(role="user", parts=[types.Part(text=prompt)])
         )
 
         # --- SECTION: GET NOVA'S REPLY ---
-        # Try to get Nova's reply — if Gemini is busy show a friendly message
-        # instead of a scary red error screen
-        try:
-            # Search knowledge base for relevant context
-            context = get_relevant_context(prompt, chunks, embeddings)
+        # FIX 1: System instruction is ALWAYS just NOVA_PERSONALITY — never mixed with dynamic data
+        # FIX 2: Dynamic context (RAG + file) injected as a separate user turn in history
+        # FIX 3: Image uploads now preserve full conversation history
 
-            # If a file was uploaded, add its content to the context too
+        try:
+            # Get relevant knowledge from RAG
+            context = get_relevant_context(prompt, chunks, embeddings)
             file_context = st.session_state.file_context
 
-            # Build enhanced prompt with knowledge base and file context injected
-            enhanced_prompt = f"""
-{NOVA_PERSONALITY}
+            # Build dynamic context block — injected separately, not into system instruction
+            dynamic_context = ""
+            if context:
+                dynamic_context += f"\n[BACKGROUND KNOWLEDGE]\n{context}\n"
+            if file_context and file_context != "[IMAGE UPLOADED]":
+                dynamic_context += f"\n[UPLOADED FILE CONTENT]\n{file_context}\n"
 
-## Relevant knowledge for this question:
-{context}
-
-## Uploaded file content (if any):
-{file_context if file_context else "No file uploaded."}
-
-If a file was uploaded, use its content to answer the user's question.
-If relevant knowledge exists, use that too.
-Otherwise just answer normally from your general knowledge.
-"""
-
-            # If an image was uploaded send it to Gemini's vision model
-            # Otherwise send the normal chat history
+            # Build the contents payload for this turn
             if st.session_state.image_bytes is not None:
+                # FIX: Image turn — preserve history + add image + current prompt
                 image_part = types.Part.from_bytes(
                     data=st.session_state.image_bytes,
                     mime_type=st.session_state.image_type
                 )
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    config=types.GenerateContentConfig(
-                        system_instruction=enhanced_prompt
-                    ),
-                    contents=[image_part, prompt]
-                )
+
+                # Build contents with full history + image + prompt
+                contents = list(st.session_state.history[:-1])  # all history except last user turn
+
+                # Add image + prompt as the current user turn
+                current_parts = [image_part, types.Part(text=prompt)]
+                if dynamic_context:
+                    current_parts.append(types.Part(text=dynamic_context))
+                contents.append(types.Content(role="user", parts=current_parts))
+
             else:
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    config=types.GenerateContentConfig(
-                        system_instruction=enhanced_prompt
-                    ),
-                    contents=st.session_state.history
-                )
+                # Text turn — inject dynamic context alongside the prompt if available
+                if dynamic_context:
+                    contents = list(st.session_state.history[:-1])
+                    current_parts = [
+                        types.Part(text=prompt),
+                        types.Part(text=dynamic_context)
+                    ]
+                    contents.append(types.Content(role="user", parts=current_parts))
+                else:
+                    contents = st.session_state.history
+
+            # Call Gemini — system instruction is always ONLY NOVA_PERSONALITY
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                config=types.GenerateContentConfig(
+                    system_instruction=NOVA_PERSONALITY
+                ),
+                contents=contents
+            )
 
             nova_reply = response.text
 
-            # Save Nova's reply to Gemini history
+            # Save clean reply to Gemini history
             st.session_state.history.append(
                 types.Content(role="model", parts=[types.Part(text=nova_reply)])
             )
 
         except Exception as e:
-            # If anything goes wrong show a friendly message instead of crashing
             error_msg = str(e)
             if "503" in error_msg or "UNAVAILABLE" in error_msg:
                 nova_reply = "Seems like my brain is a little overloaded right now 🧠💫 Gemini's servers are busy. Give me a moment and try again!"
             elif "429" in error_msg or "quota" in error_msg.lower():
-                nova_reply = "Whoa, we've been chatting a lot! 😄 I've hit my rate limit for now. Try again in a minute!"
+                # Auto retry after 15 seconds instead of immediately failing
+                import time
+                with st.spinner("Nova is thinking... (one moment) ⏳"):
+                    time.sleep(15)
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        config=types.GenerateContentConfig(
+                            system_instruction=NOVA_PERSONALITY
+                        ),
+                        contents=contents
+                    )
+                    nova_reply = response.text
+                    st.session_state.history.append(
+                        types.Content(role="model", parts=[types.Part(text=nova_reply)])
+                    )
+                except:
+                    nova_reply = "Still a little overloaded 😅 Give me another moment and try again!"
+                    if st.session_state.history:
+                        st.session_state.history.pop()
             else:
                 nova_reply = "Something unexpected happened on my end 😅 Try again in a moment!"
+            if st.session_state.history:
+                st.session_state.history.pop()
 
-            # Remove the last user message from history since we didn't get a reply
-            st.session_state.history.pop()
-
-    # --- SECTION: IMAGE GENERATION ---
-    # Check if Nova's reply contains an image generation request
-    # If yes extract the prompt and call Pollinations.ai to generate the image
-    # Pollinations.ai is free, no API key needed, works after deployment too
-    
-    # --- VOICE OUTPUT ---
-    # If Nova speaks is on, convert her text reply to audio using gTTS
-    # gTTS uses Google's servers — natural female English voice
-    # We convert the audio to base64 and play it directly in the browser
+    # --- SECTION: VOICE OUTPUT ---
+    # gTTS converts Nova's reply to audio — auto detects language
+    # Strips emojis and markdown before speaking
 
     if nova_speaks and nova_reply and "[GENERATE_IMAGE:" not in nova_reply:
         try:
-            # Clean the text before speaking
-            # Remove emojis, symbols and fix punctuation so it sounds natural
-            import re
+            # Remove emojis and special unicode symbols but KEEP hindi/regional text
             clean_reply = nova_reply
-
-            # Remove all emojis and special unicode symbols
-            clean_reply = re.sub(r'[^\x00-\x7F]+', ' ', clean_reply)
-
-            # Remove markdown formatting symbols
-            clean_reply = re.sub(r'\*+', '', clean_reply)   # bold/italic asterisks
-            clean_reply = re.sub(r'#+\s', '', clean_reply)  # markdown headers
-            clean_reply = re.sub(r'\[.*?\]\(.*?\)', '', clean_reply)  # links
-            clean_reply = re.sub(r'`+', '', clean_reply)    # code backticks
-
-            # Clean up extra spaces
+            # Remove emojis only (not regional language characters)
+            clean_reply = re.sub(r'[\U00010000-\U0010ffff]', '', clean_reply)
+            clean_reply = re.sub(r'[\u2600-\u26FF\u2700-\u27BF]', '', clean_reply)
+            # Remove markdown formatting
+            clean_reply = re.sub(r'\*+', '', clean_reply)
+            clean_reply = re.sub(r'#+\s', '', clean_reply)
+            clean_reply = re.sub(r'\[.*?\]\(.*?\)', '', clean_reply)
+            clean_reply = re.sub(r'`+', '', clean_reply)
+            # Remove Hindi danda and other punctuation gTTS reads literally
+            clean_reply = re.sub(r'[।॥|]', '.', clean_reply)
+            # Remove image generation tags
+            clean_reply = re.sub(r'\[GENERATE_IMAGE:.*?\]', '', clean_reply)
+            # Clean extra spaces
             clean_reply = re.sub(r'\s+', ' ', clean_reply).strip()
 
-            # Generate speech from cleaned text
-            tts = gTTS(text=clean_reply, lang='en', tld='co.uk')  # British female voice
+            # gTTS auto detects language from text
+            # Auto detect language of Nova's reply for correct pronunciation
+            # We use a simple detection library to pick the right gTTS language
+            try:
+                from langdetect import detect
+                detected_lang = detect(clean_reply)
+                # Map detected language to gTTS supported language codes
+                lang_map = {
+                    'hi': 'hi',   # Hindi
+                    'bn': 'bn',   # Bengali
+                    'ta': 'ta',   # Tamil
+                    'te': 'te',   # Telugu
+                    'mr': 'mr',   # Marathi
+                    'fr': 'fr',   # French
+                    'de': 'de',   # German
+                    'es': 'es',   # Spanish
+                    'ja': 'ja',   # Japanese
+                    'ko': 'ko',   # Korean
+                    'zh-cn': 'zh-CN',  # Chinese
+                    'ar': 'ar',   # Arabic
+                    'ru': 'ru',   # Russian
+                    'pt': 'pt',   # Portuguese
+                    'en': 'en',   # English
+                }
+                tts_lang = lang_map.get(detected_lang, 'en')
+            except:
+                tts_lang = 'en'
 
-            # Save to memory buffer instead of a file
+            tts = gTTS(text=clean_reply, lang=tts_lang)
             audio_buffer = io.BytesIO()
             tts.write_to_fp(audio_buffer)
             audio_buffer.seek(0)
-
-            # Convert to base64 so browser can play it directly
             audio_b64 = base64.b64encode(audio_buffer.read()).decode()
 
-            # Inject audio player into the page and autoplay
             st.components.v1.html(f"""
                 <audio autoplay style="display:none">
                     <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
                 </audio>
             """, height=0)
-
         except Exception:
-            pass  # If voice fails silently, don't crash the app
+            pass
+
+    # --- SECTION: IMAGE GENERATION ---
+    # FIX 3: Raw [GENERATE_IMAGE:...] tag is stripped from chat history
+    # Only the clean image URL is saved — no tag leaks into UI
 
     if "[GENERATE_IMAGE:" in nova_reply:
+        # Extract image prompt cleanly
         image_prompt = nova_reply.split("[GENERATE_IMAGE:")[1].split("]")[0].strip()
 
         with st.spinner("Nova is creating your image... 🎨"):
-            # Pollinations.ai works by encoding the prompt into a URL
             encoded_prompt = requests.utils.quote(image_prompt)
             image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=768&height=768&nologo=true"
-
             image_response = requests.get(image_url)
 
             if image_response.status_code == 200:
                 with st.chat_message("assistant"):
                     st.image(image_url, caption="Generated by Nova 🎨")
 
+                # Save only the clean image URL — no raw tag in history
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": image_url,
                     "type": "image"
                 })
+
+                # Save clean note to Gemini history — no raw tag
+                st.session_state.history.append(
+                    types.Content(role="model", parts=[types.Part(text="[Generated an image as requested]")])
+                )
             else:
                 with st.chat_message("assistant"):
                     st.markdown("Hmm, I had trouble generating that image 😅 Try again in a moment!")
 
     else:
-        # Normal text reply — show in chat
+        # Normal text reply
         with st.chat_message("assistant"):
             st.markdown(nova_reply)
 
