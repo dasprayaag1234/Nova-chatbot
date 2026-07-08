@@ -110,9 +110,19 @@ hr {
 }
 
 [data-testid="stChatInput"] textarea {
-    color: #0a0a0f !important;
+    color: #e2e8f0 !important;
     font-family: 'Inter', sans-serif !important;
-    caret-color: #6366f1 !important;
+    caret-color: #a78bfa !important;
+    background-color: transparent !important;
+    -webkit-text-fill-color: #e2e8f0 !important;
+}
+
+[data-testid="stChatInputContainer"] {
+    background-color: rgba(15, 15, 30, 0.8) !important;
+}
+
+[data-testid="stBottom"] > div {
+    background-color: #0a0a0f !important;
 }
 
 [data-testid="stSpinner"] p {
