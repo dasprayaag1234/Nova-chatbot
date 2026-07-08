@@ -137,6 +137,22 @@ section[data-testid="stBottom"] > div {
     border: 1px solid rgba(99, 102, 241, 0.3) !important;
     border-radius: 16px !important;
 }
+
+/* Fix input text color and bottom bar */
+[data-testid="stChatInput"] textarea {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    background: transparent !important;
+    caret-color: #a78bfa !important;
+}
+
+[data-testid="stBottom"] {
+    background: #0a0a0f !important;
+}
+
+.st-emotion-cache-1espb9k {
+    background: #0a0a0f !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
