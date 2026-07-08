@@ -112,6 +112,8 @@ hr {
 [data-testid="stChatInput"] textarea {
     color: #e2e8f0 !important;
     font-family: 'Inter', sans-serif !important;
+    background: transparent !important;
+    caret-color: #a78bfa !important;
 }
 
 [data-testid="stSpinner"] p {
