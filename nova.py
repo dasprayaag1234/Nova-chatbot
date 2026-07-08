@@ -117,8 +117,13 @@ hr {
     -webkit-text-fill-color: #e2e8f0 !important;
 }
 
-[data-testid="stChatInputContainer"] {
-    background-color: rgba(15, 15, 30, 0.8) !important;
+[data-testid="stChatInputContainer"],
+[data-testid="stChatInputContainer"] > div,
+[data-testid="stChatInputContainer"] textarea,
+.stChatInputContainer,
+.stChatInputContainer > div {
+    background-color: rgba(15, 15, 30, 0.9) !important;
+    background: rgba(15, 15, 30, 0.9) !important;
 }
 
 [data-testid="stBottom"] > div {
