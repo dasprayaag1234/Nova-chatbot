@@ -138,21 +138,6 @@ section[data-testid="stBottom"] > div {
     border-radius: 16px !important;
 }
 
-/* Fix input text color and bottom bar */
-[data-testid="stChatInput"] textarea {
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-    background: transparent !important;
-    caret-color: #a78bfa !important;
-}
-
-[data-testid="stBottom"] {
-    background: #0a0a0f !important;
-}
-
-.st-emotion-cache-1espb9k {
-    background: #0a0a0f !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -539,7 +524,7 @@ if prompt := st.chat_input("Message Nova..."):
                     time.sleep(15)
                 try:
                     response = client.models.generate_content(
-                        model="gemini-2.0-flash",
+                        model="gemini-2.5-flash",
                         config=types.GenerateContentConfig(
                             system_instruction=NOVA_PERSONALITY
                         ),
