@@ -18,6 +18,7 @@ import io
 import base64
 from gtts import gTTS
 from rag import load_knowledge, build_index, get_relevant_context
+from ddgs import DDGS
 
 
 # --- SECTION: API KEY SETUP ---
@@ -112,22 +113,6 @@ hr {
 [data-testid="stChatInput"] textarea {
     color: #e2e8f0 !important;
     font-family: 'Inter', sans-serif !important;
-    caret-color: #a78bfa !important;
-    background-color: transparent !important;
-    -webkit-text-fill-color: #e2e8f0 !important;
-}
-
-[data-testid="stChatInputContainer"],
-[data-testid="stChatInputContainer"] > div,
-[data-testid="stChatInputContainer"] textarea,
-.stChatInputContainer,
-.stChatInputContainer > div {
-    background-color: rgba(15, 15, 30, 0.9) !important;
-    background: rgba(15, 15, 30, 0.9) !important;
-}
-
-[data-testid="stBottom"] > div {
-    background-color: #0a0a0f !important;
 }
 
 [data-testid="stSpinner"] p {
@@ -151,7 +136,6 @@ section[data-testid="stBottom"] > div {
     border: 1px solid rgba(99, 102, 241, 0.3) !important;
     border-radius: 16px !important;
 }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -332,6 +316,62 @@ def load_knowledge_base():
 chunks, embeddings = load_knowledge_base()
 
 
+# --- SECTION: WEB SEARCH ---
+# Uses DuckDuckGo to search the web — no API key needed, completely free!
+# Nova automatically detects when a question needs current/recent information
+# and searches the web before answering
+
+def search_web(query, max_results=3):
+    """Search DuckDuckGo and return formatted results"""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(
+                query,
+                max_results=max_results,
+                region='in-en',  # India region for better results
+                safesearch='off',
+                timelimit=None
+            ))
+        if not results:
+            return ""
+        formatted = ""
+        for i, r in enumerate(results, 1):
+            formatted += f"\n[Source {i}]: {r.get('title', '')}\n{r.get('body', '')}\nURL: {r.get('href', '')}\n"
+        return formatted
+    except Exception as e:
+        # Try simpler search if first attempt fails
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            if results:
+                formatted = ""
+                for i, r in enumerate(results, 1):
+                    formatted += f"\n[Source {i}]: {r.get('title', '')}\n{r.get('body', '')}\n"
+                return formatted
+        except:
+            pass
+        return ""
+
+def needs_web_search(prompt):
+    """Detect if the question needs current/real-time information"""
+    web_keywords = [
+        # Time related
+        "today", "yesterday", "tonight", "right now", "currently", "latest",
+        "recent", "new", "just", "breaking", "this week", "this month",
+        "this year", "2024", "2025", "2026",
+        # News and events
+        "news", "happened", "update", "announce", "release", "launch",
+        "score", "result", "winner", "election", "match", "game",
+        # Current info
+        "weather", "price", "stock", "rate", "covid", "war", "crisis",
+        "who is", "who won", "what happened", "when did", "where is",
+        # Hindi keywords
+        "aaj", "abhi", "taza", "khabar", "samachar", "score",
+    ]
+    prompt_lower = prompt.lower()
+    return any(keyword in prompt_lower for keyword in web_keywords)
+
+
 # --- SECTION: NOVA'S PERSONALITY ---
 # This is kept STATIC and never mixed with dynamic data
 # Dynamic context (RAG, files) is injected separately per turn
@@ -473,6 +513,16 @@ if prompt := st.chat_input("Message Nova..."):
         try:
             # Get relevant knowledge from RAG
             context = get_relevant_context(prompt, chunks, embeddings)
+
+            # Web search — runs automatically when question needs current info
+            web_context = ""
+            if needs_web_search(prompt):
+                with st.spinner("Nova is searching the web... 🌐"):
+                    web_results = search_web(prompt)
+                    if web_results:
+                        web_context = web_results
+                        st.caption("🌐 Nova searched the web for this answer")
+                    pass
             file_context = st.session_state.file_context
 
             # Build dynamic context block — injected separately, not into system instruction
@@ -481,6 +531,8 @@ if prompt := st.chat_input("Message Nova..."):
                 dynamic_context += f"\n[BACKGROUND KNOWLEDGE]\n{context}\n"
             if file_context and file_context != "[IMAGE UPLOADED]":
                 dynamic_context += f"\n[UPLOADED FILE CONTENT]\n{file_context}\n"
+            if web_context:
+                dynamic_context += f"\n[REAL-TIME WEB SEARCH RESULTS]\n{web_context}\nUse these results to answer accurately. Mention the sources naturally in your reply.\n"
 
             # Build the contents payload for this turn
             if st.session_state.image_bytes is not None:
@@ -538,7 +590,7 @@ if prompt := st.chat_input("Message Nova..."):
                     time.sleep(15)
                 try:
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-2.0-flash",
                         config=types.GenerateContentConfig(
                             system_instruction=NOVA_PERSONALITY
                         ),
@@ -608,7 +660,9 @@ if prompt := st.chat_input("Message Nova..."):
             except:
                 tts_lang = 'en'
 
-            tts = gTTS(text=clean_reply, lang=tts_lang)
+            # Limit speech to first 500 characters to avoid gTTS timeout on long replies
+            speech_text = clean_reply[:500] if len(clean_reply) > 500 else clean_reply
+            tts = gTTS(text=speech_text, lang=tts_lang)
             audio_buffer = io.BytesIO()
             tts.write_to_fp(audio_buffer)
             audio_buffer.seek(0)
